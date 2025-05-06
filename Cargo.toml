@@ -1,4 +1,5 @@
 [package]
+authors = ["Erlangga Yudi Pradana"]
 name = "grafana-exim"
 version = "0.1.0"
 edition = "2024"
