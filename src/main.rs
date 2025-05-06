@@ -162,6 +162,47 @@ async fn import_dashboard() {
         let endpoint = format!("{}/api/dashboards/db", config.grafana_dst_host);
         client.post(&endpoint).json(&json_data).send().await.unwrap();
     }
+    
+    import_data_sources().await;
+}
+
+async fn import_data_sources() {
+    let config = &CONFIG.get().unwrap();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    let api_key = format!("Bearer {}", config.grafana_src_api_key);
+    headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&api_key).unwrap());
+
+    let endpoint = format!("{}/api/datasources", config.grafana_src_host);
+    let data_sources: Vec<serde_json::Value> = match client.get(&endpoint).headers(headers).send().await {
+        Err(_) => vec![],
+        Ok(res) => {
+            if let Ok(json) = res.json::<serde_json::Value>().await {
+                json.as_array().unwrap().clone()
+            } else {
+                vec![]
+            }
+        }
+    };
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    let api_key = format!("Bearer {}", config.grafana_dst_api_key);
+    headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&api_key).unwrap());
+
+    let endpoint = format!("{}/api/datasources", config.grafana_dst_host);
+
+    for ds in data_sources {
+        client.post(&endpoint)
+            .headers(headers.clone())
+            .json(&ds).send()
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::main]
