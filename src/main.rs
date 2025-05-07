@@ -206,12 +206,51 @@ async fn import_data_sources() {
 
     let endpoint = format!("{}/api/datasources", config.grafana_dst_host);
 
+    let dst_data_source_uids: Vec<serde_json::Value> = match client.get(&endpoint).headers(headers.clone()).send().await {
+        Err(_) => vec![],
+        Ok(res) => {
+            res.json::<serde_json::Value>().await
+                .ok()
+                .and_then(|json| json.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|item| {
+                    match item.as_object() {
+                        None => None,
+                        Some(obj) => {
+                            match obj.get("uid") {
+                                Some(value) => Some(value.clone()),
+                                None => None,
+                            }
+                        },
+                    }
+                })
+                .collect()
+        }
+    };
+
     for ds in data_sources {
-        client.post(&endpoint)
-            .headers(headers.clone())
-            .json(&ds).send()
-            .await
-            .unwrap();
+        let uid = match ds["uid"].as_str() {
+            Some(uid) => uid,
+            None => continue,
+        };
+
+        if dst_data_source_uids.contains(&serde_json::json!(uid)) {
+            let endpoint = format!("{}/api/datasources/uid/{}", config.grafana_dst_host, uid);
+            client.put(&endpoint)
+                .headers(headers.clone())
+                .json(&ds)
+                .send()
+                .await
+                .unwrap();
+        } else {
+            client.post(&endpoint)
+                .headers(headers.clone())
+                .json(&ds)
+                .send()
+                .await
+                .unwrap();
+        }
     }
 }
 
