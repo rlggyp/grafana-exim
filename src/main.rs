@@ -179,14 +179,24 @@ async fn import_data_sources() {
     headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&api_key).unwrap());
 
     let endpoint = format!("{}/api/datasources", config.grafana_src_host);
+
     let data_sources: Vec<serde_json::Value> = match client.get(&endpoint).headers(headers).send().await {
         Err(_) => vec![],
         Ok(res) => {
-            if let Ok(json) = res.json::<serde_json::Value>().await {
-                json.as_array().unwrap().clone()
-            } else {
-                vec![]
-            }
+            res.json::<serde_json::Value>().await
+                .ok()
+                .and_then(|json| json.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mut item| {
+                    if let Some(obj) = item.as_object_mut() {
+                        obj.remove("id");
+                        obj.remove("orgId");
+                    }
+
+                    item
+                })
+                .collect()
         }
     };
 
