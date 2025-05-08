@@ -149,8 +149,23 @@ async fn import_dashboard() {
         let file_content = fs::read_to_string(path).unwrap();
         let json_data: serde_json::Value = serde_json::from_str(&file_content).unwrap();
 
-        let endpoint = format!("{}/api/folders", config.grafana_dst_host);
-        client.post(&endpoint).json(&json_data).send().await.unwrap();
+        let folder_uid = json_data.get("uid").unwrap().as_str().unwrap().to_string();
+        let mut endpoint = format!("{}/api/folders/{}", config.grafana_dst_host, folder_uid);
+
+        let folder_exist: bool = client.get(&endpoint)
+            .send()
+            .await
+            .map(|res| res.status() == reqwest::StatusCode::OK)
+            .unwrap_or(false);
+
+        let method = if folder_exist {
+            reqwest::Method::PUT
+        } else {
+            endpoint = format!("{}/api/folders", config.grafana_dst_host);
+            reqwest::Method::POST
+        };
+
+        client.request(method, &endpoint).json(&json_data).send().await.unwrap();
     }
 
     let dashboards_path = list_dir(&dashboards_dir);
@@ -204,29 +219,25 @@ async fn import_data_sources() {
     let api_key = format!("Bearer {}", config.grafana_dst_api_key);
     headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&api_key).unwrap());
 
-    let endpoint = format!("{}/api/datasources", config.grafana_dst_host);
+    let mut endpoint = format!("{}/api/datasources", config.grafana_dst_host);
 
-    let dst_data_source_uids: Vec<serde_json::Value> = match client.get(&endpoint).headers(headers.clone()).send().await {
-        Err(_) => vec![],
-        Ok(res) => {
-            res.json::<serde_json::Value>().await
-                .ok()
-                .and_then(|json| json.as_array().cloned())
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|item| {
-                    match item.as_object() {
-                        None => None,
-                        Some(obj) => {
-                            match obj.get("uid") {
-                                Some(value) => Some(value.clone()),
-                                None => None,
-                            }
-                        },
-                    }
-                })
-                .collect()
-        }
+    let dst_data_source_uids: Vec<serde_json::Value> = match client.get(&endpoint)
+        .headers(headers.clone())
+        .send().
+        await {
+            Err(_) => vec![],
+            Ok(res) => {
+                res.json::<serde_json::Value>().await
+                    .ok()
+                    .and_then(|json| json.as_array().cloned())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|item| {
+                        item.as_object()
+                            .and_then(|obj| obj.get("uid").cloned())
+                    })
+                    .collect()
+            }
     };
 
     for ds in data_sources {
@@ -235,22 +246,19 @@ async fn import_data_sources() {
             None => continue,
         };
 
-        if dst_data_source_uids.contains(&serde_json::json!(uid)) {
-            let endpoint = format!("{}/api/datasources/uid/{}", config.grafana_dst_host, uid);
-            client.put(&endpoint)
-                .headers(headers.clone())
-                .json(&ds)
-                .send()
-                .await
-                .unwrap();
+        let method = if dst_data_source_uids.contains(&serde_json::json!(uid)) {
+            endpoint = format!("{}/api/datasources/uid/{}", config.grafana_dst_host, uid); 
+            reqwest::Method::PUT
         } else {
-            client.post(&endpoint)
-                .headers(headers.clone())
-                .json(&ds)
-                .send()
-                .await
-                .unwrap();
-        }
+            reqwest::Method::POST
+        };
+
+        client.request(method, &endpoint)
+            .headers(headers.clone())
+            .json(&ds)
+            .send()
+            .await
+            .unwrap();
     }
 }
 
@@ -264,7 +272,6 @@ async fn main() {
         grafana_dst_host: std::env::var("GRAFANA_DST_HOST").expect("GRAFANA_DST_HOST must be set"),
         grafana_dst_api_key: std::env::var("GRAFANA_DST_API_KEY").expect("GRAFANA_DST_API_KEY must be set"),
     }).unwrap();
-
 
     let args: Vec<String> = env::args().collect();
 
