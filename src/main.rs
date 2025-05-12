@@ -67,25 +67,31 @@ async fn export_dashboard() {
         },
     };
 
+    let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     for uid in dashboard_uids {
+        let client = client.clone();
+        let dashboards_dir = dashboards_dir.clone();
         let endpoint = format!("{}/api/dashboards/uid/{}", config.grafana_src_host, uid);
 
-        if let Ok(res) = client.get(&endpoint).send().await {
-            if let Ok(mut json) = res.json::<serde_json::Value>().await {
-                let dashboard_json = json.as_object_mut().unwrap();
-                let folder_uid = dashboard_json["meta"]["folderUid"].as_str().unwrap().to_string();
-                let dashboard = &mut dashboard_json["dashboard"].as_object_mut().unwrap();
+        handles.push(tokio::spawn(async move {
+            if let Ok(res) = client.get(&endpoint).send().await {
+                if let Ok(mut json) = res.json::<serde_json::Value>().await {
+                    let dashboard_json = json.as_object_mut().unwrap();
+                    let folder_uid = dashboard_json["meta"]["folderUid"].as_str().unwrap().to_string();
+                    let dashboard = &mut dashboard_json["dashboard"].as_object_mut().unwrap();
 
-                dashboard.remove("id");
-                dashboard_json.remove("meta");
+                    dashboard.remove("id");
+                    dashboard_json.remove("meta");
 
-                dashboard_json.insert("folderUid".to_string(), serde_json::Value::String(folder_uid));
-                dashboard_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
+                    dashboard_json.insert("folderUid".to_string(), serde_json::Value::String(folder_uid));
+                    dashboard_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
 
-                let file = fs::File::create(format!("{}/{}.json", dashboards_dir, uid)).unwrap();
-                serde_json::to_writer_pretty(file, &dashboard_json).unwrap();
+                    let file = fs::File::create(format!("{}/{}.json", dashboards_dir, uid)).unwrap();
+                    serde_json::to_writer_pretty(file, &dashboard_json).unwrap();
+                }
             }
-        }
+        }));
     }
 
     let endpoint = format!("{}/api/folders", config.grafana_src_host);
@@ -104,20 +110,29 @@ async fn export_dashboard() {
     };
 
     for uid in folder_uids {
+        let client = client.clone();
+        let folders_dir = folders_dir.clone();
         let endpoint = format!("{}/api/folders/{}", config.grafana_src_host, uid);
 
-        if let Ok(res) = client.get(&endpoint).send().await {
-            if let Ok(mut json) = res.json::<serde_json::Value>().await {
-                let folder_json = json.as_object_mut().unwrap();
+        handles.push(tokio::spawn(async move {
+            if let Ok(res) = client.get(&endpoint).send().await {
+                if let Ok(mut json) = res.json::<serde_json::Value>().await {
+                    let folder_json = json.as_object_mut().unwrap();
 
-                folder_json.remove("id");
-                folder_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
+                    folder_json.remove("id");
+                    folder_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
 
-                let file = fs::File::create(format!("{}/{}.json", folders_dir, uid)).unwrap();
-                serde_json::to_writer_pretty(file, &folder_json).unwrap();
+                    let file = fs::File::create(format!("{}/{}.json", folders_dir, uid)).unwrap();
+                    serde_json::to_writer_pretty(file, &folder_json).unwrap();
+                }
             }
-        }
+        }));
     }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
 }
 
 async fn import_dashboard() {
