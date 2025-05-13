@@ -89,6 +89,8 @@ async fn export_dashboard() {
 
                     let file = fs::File::create(format!("{}/{}.json", dashboards_dir, uid)).unwrap();
                     serde_json::to_writer_pretty(file, &dashboard_json).unwrap();
+
+                    println!("Successfully saved dashboard: dashboards/{}.json", uid);
                 }
             }
         }));
@@ -124,6 +126,7 @@ async fn export_dashboard() {
 
                     let file = fs::File::create(format!("{}/{}.json", folders_dir, uid)).unwrap();
                     serde_json::to_writer_pretty(file, &folder_json).unwrap();
+                    println!("Successfully saved folder: folders/{}.json", uid);
                 }
             }
         }));
@@ -132,7 +135,6 @@ async fn export_dashboard() {
     for handle in handles {
         handle.await.unwrap();
     }
-
 }
 
 async fn import_dashboard() {
@@ -158,6 +160,8 @@ async fn import_dashboard() {
         .build()
         .unwrap();
 
+    let mut handles: Vec<tokio::task::JoinHandle<()>> =  Vec::new();
+
     let folders_path = list_dir(&folders_dir);
 
     for path in folders_path {
@@ -166,21 +170,38 @@ async fn import_dashboard() {
 
         let folder_uid = json_data.get("uid").unwrap().as_str().unwrap().to_string();
         let mut endpoint = format!("{}/api/folders/{}", config.grafana_dst_host, folder_uid);
+        let client = client.clone();
+        let grafana_dst_host = config.grafana_dst_host.clone();
 
-        let folder_exist: bool = client.get(&endpoint)
-            .send()
-            .await
-            .map(|res| res.status() == reqwest::StatusCode::OK)
-            .unwrap_or(false);
+        handles.push(tokio::spawn(async move {
+            let folder_exist: bool = client.get(&endpoint)
+                .send()
+                .await
+                .map(|res| res.status() == reqwest::StatusCode::OK)
+                .unwrap_or(false);
 
-        let method = if folder_exist {
-            reqwest::Method::PUT
-        } else {
-            endpoint = format!("{}/api/folders", config.grafana_dst_host);
-            reqwest::Method::POST
-        };
+            let method = if folder_exist {
+                reqwest::Method::PUT
+            } else {
+                endpoint = format!("{}/api/folders", grafana_dst_host);
+                reqwest::Method::POST
+            };
 
-        client.request(method, &endpoint).json(&json_data).send().await.unwrap();
+            match client.request(method, &endpoint).json(&json_data).send().await {
+                Err(e) => eprintln!("Error importing folder '{}' to '{}': {}", folder_uid, endpoint, e),
+                Ok(res) => {
+                    if res.status() == reqwest::StatusCode::OK {
+                        println!("Successfully importing dashboard '{}' to '{}'", folder_uid, endpoint);
+                    } else {
+                        eprintln!("Failed to import dashboard '{}' to '{}' with status code {}", folder_uid, endpoint, res.status().as_u16());
+                    }
+                },
+            }
+        }));
+    }
+
+    for handle in handles.drain(..) {
+        handle.await.unwrap();
     }
 
     let dashboards_path = list_dir(&dashboards_dir);
@@ -188,9 +209,27 @@ async fn import_dashboard() {
     for path in dashboards_path {
         let file_content = fs::read_to_string(path).unwrap();
         let json_data: serde_json::Value = serde_json::from_str(&file_content).unwrap();
+        let dashboard_uid = json_data["dashboard"].get("uid").unwrap().as_str().unwrap().to_string();
 
         let endpoint = format!("{}/api/dashboards/db", config.grafana_dst_host);
-        client.post(&endpoint).json(&json_data).send().await.unwrap();
+        let client = client.clone();
+
+        handles.push(tokio::spawn(async move {
+            match client.post(&endpoint).json(&json_data).send().await {
+                Err(e) => eprintln!("Error importing dashboard '{}' to '{}': {}", dashboard_uid, endpoint, e),
+                Ok(res) => {
+                    if res.status() == reqwest::StatusCode::OK {
+                        println!("Successfully importing dashboard '{}' to '{}'", dashboard_uid, endpoint);
+                    } else {
+                        eprintln!("Failed to import dashboard '{}' to '{}' with status code {}", dashboard_uid, endpoint, res.status().as_u16());
+                    }
+                },
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
     }
     
     import_data_sources().await;
