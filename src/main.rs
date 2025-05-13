@@ -26,7 +26,7 @@ fn list_dir(dir_path: &str) -> Vec<std::path::PathBuf> {
         .collect::<Result<Vec<_>, std::io::Error>>().unwrap()
 }
 
-async fn export_dashboard() {
+async fn export_dashboards() {
     let config = &CONFIG.get().unwrap();
 
     let current_dir = {
@@ -75,22 +75,25 @@ async fn export_dashboard() {
         let endpoint = format!("{}/api/dashboards/uid/{}", config.grafana_src_host, uid);
 
         handles.push(tokio::spawn(async move {
-            if let Ok(res) = client.get(&endpoint).send().await {
-                if let Ok(mut json) = res.json::<serde_json::Value>().await {
-                    let dashboard_json = json.as_object_mut().unwrap();
-                    let folder_uid = dashboard_json["meta"]["folderUid"].as_str().unwrap().to_string();
-                    let dashboard = &mut dashboard_json["dashboard"].as_object_mut().unwrap();
+            match client.get(&endpoint).send().await {
+                Err(e) => eprintln!("Error fetching dashboard '{}' from '{}': {}", uid, endpoint, e),
+                Ok(res) => {
+                    if let Ok(mut json) = res.json::<serde_json::Value>().await {
+                        let dashboard_json = json.as_object_mut().unwrap();
+                        let folder_uid = dashboard_json["meta"]["folderUid"].as_str().unwrap().to_string();
+                        let dashboard = &mut dashboard_json["dashboard"].as_object_mut().unwrap();
 
-                    dashboard.remove("id");
-                    dashboard_json.remove("meta");
+                        dashboard.remove("id");
+                        dashboard_json.remove("meta");
 
-                    dashboard_json.insert("folderUid".to_string(), serde_json::Value::String(folder_uid));
-                    dashboard_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
+                        dashboard_json.insert("folderUid".to_string(), serde_json::Value::String(folder_uid));
+                        dashboard_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
 
-                    let file = fs::File::create(format!("{}/{}.json", dashboards_dir, uid)).unwrap();
-                    serde_json::to_writer_pretty(file, &dashboard_json).unwrap();
+                        let file = fs::File::create(format!("{}/{}.json", dashboards_dir, uid)).unwrap();
+                        serde_json::to_writer(file, &dashboard_json).unwrap();
 
-                    println!("Successfully saved dashboard: dashboards/{}.json", uid);
+                        println!("Successfully saved dashboard: dashboards/{}.json", uid);
+                    }
                 }
             }
         }));
@@ -117,27 +120,32 @@ async fn export_dashboard() {
         let endpoint = format!("{}/api/folders/{}", config.grafana_src_host, uid);
 
         handles.push(tokio::spawn(async move {
-            if let Ok(res) = client.get(&endpoint).send().await {
-                if let Ok(mut json) = res.json::<serde_json::Value>().await {
-                    let folder_json = json.as_object_mut().unwrap();
+            match client.get(&endpoint).send().await {
+                Err(e) => eprintln!("Error fetching folder '{}' from '{}': {}", uid, endpoint, e),
+                Ok(res) => {
+                    if let Ok(mut json) = res.json::<serde_json::Value>().await {
+                        let folder_json = json.as_object_mut().unwrap();
 
-                    folder_json.remove("id");
-                    folder_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
+                        folder_json.remove("id");
+                        folder_json.insert("overwrite".to_string(), serde_json::Value::Bool(true));
 
-                    let file = fs::File::create(format!("{}/{}.json", folders_dir, uid)).unwrap();
-                    serde_json::to_writer_pretty(file, &folder_json).unwrap();
-                    println!("Successfully saved folder: folders/{}.json", uid);
-                }
-            }
+                        let file = fs::File::create(format!("{}/{}.json", folders_dir, uid)).unwrap();
+                        serde_json::to_writer(file, &folder_json).unwrap();
+                        println!("Successfully saved folder: folders/{}.json", uid);
+                    }
+                },
+            } 
         }));
     }
 
     for handle in handles {
         handle.await.unwrap();
     }
+
+    export_datasources().await;
 }
 
-async fn import_dashboard() {
+async fn import_dashboards() {
     let config = &CONFIG.get().unwrap();
 
     let current_dir = {
@@ -162,9 +170,9 @@ async fn import_dashboard() {
 
     let mut handles: Vec<tokio::task::JoinHandle<()>> =  Vec::new();
 
-    let folders_path = list_dir(&folders_dir);
+    let folder_paths = list_dir(&folders_dir);
 
-    for path in folders_path {
+    for path in folder_paths {
         let file_content = fs::read_to_string(path).unwrap();
         let json_data: serde_json::Value = serde_json::from_str(&file_content).unwrap();
 
@@ -191,9 +199,9 @@ async fn import_dashboard() {
                 Err(e) => eprintln!("Error importing folder '{}' to '{}': {}", folder_uid, endpoint, e),
                 Ok(res) => {
                     if res.status() == reqwest::StatusCode::OK {
-                        println!("Successfully importing dashboard '{}' to '{}'", folder_uid, endpoint);
+                        println!("Successfully importing folder '{}' to '{}'", folder_uid, endpoint);
                     } else {
-                        eprintln!("Failed to import dashboard '{}' to '{}' with status code {}", folder_uid, endpoint, res.status().as_u16());
+                        eprintln!("Failed to import folder '{}' to '{}' with status code {}", folder_uid, endpoint, res.status().as_u16());
                     }
                 },
             }
@@ -204,9 +212,9 @@ async fn import_dashboard() {
         handle.await.unwrap();
     }
 
-    let dashboards_path = list_dir(&dashboards_dir);
+    let dashboard_paths = list_dir(&dashboards_dir);
 
-    for path in dashboards_path {
+    for path in dashboard_paths {
         let file_content = fs::read_to_string(path).unwrap();
         let json_data: serde_json::Value = serde_json::from_str(&file_content).unwrap();
         let dashboard_uid = json_data["dashboard"].get("uid").unwrap().as_str().unwrap().to_string();
@@ -230,26 +238,28 @@ async fn import_dashboard() {
 
     for handle in handles {
         handle.await.unwrap();
-    }
-    
-    import_data_sources().await;
+    }    
+
+    import_datasources().await;
 }
 
-async fn import_data_sources() {
+async fn export_datasources() {
     let config = &CONFIG.get().unwrap();
 
+    let grafana_src_api_key = format!("Bearer {}", config.grafana_src_api_key);
+    let auth_value = reqwest::header::HeaderValue::from_str(&grafana_src_api_key).unwrap();
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+
     let client = reqwest::Client::builder()
+        .default_headers(headers)
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
 
-    let mut headers = reqwest::header::HeaderMap::new();
-    let api_key = format!("Bearer {}", config.grafana_src_api_key);
-    headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&api_key).unwrap());
-
     let endpoint = format!("{}/api/datasources", config.grafana_src_host);
-
-    let data_sources: Vec<serde_json::Value> = match client.get(&endpoint).headers(headers).send().await {
+    let datasources: Vec<serde_json::Value> = match client.get(&endpoint).send().await {
         Err(_) => vec![],
         Ok(res) => {
             res.json::<serde_json::Value>().await
@@ -269,14 +279,51 @@ async fn import_data_sources() {
         }
     };
 
+    let current_dir = {
+        let current_dir = env::current_dir().unwrap();
+        current_dir.to_str().unwrap().to_string()
+    };
+
+    let datasources_dir = format!("{}/datasources", current_dir);
+    create_dir(&datasources_dir);
+
+    for ds in datasources {
+        let uid = match ds["uid"].as_str() {
+            Some(uid) => uid,
+            None => continue,
+        };
+
+        let file = fs::File::create(format!("{}/{}.json", datasources_dir, uid)).unwrap();
+        serde_json::to_writer(file, &ds).unwrap();
+
+        println!("Successfully saved datasource: datasources/{}.json", uid);
+    }
+}
+
+async fn import_datasources() {
+    let config = &CONFIG.get().unwrap();
+
+    let current_dir = {
+        let current_dir = env::current_dir().unwrap();
+        current_dir.to_str().unwrap().to_string()
+    };
+
+    let datasources_dir = format!("{}/datasources", current_dir);
+    let datasource_paths = list_dir(&datasources_dir);
+
     let mut headers = reqwest::header::HeaderMap::new();
     let api_key = format!("Bearer {}", config.grafana_dst_api_key);
     headers.insert(reqwest::header::AUTHORIZATION, reqwest::header::HeaderValue::from_str(&api_key).unwrap());
 
-    let mut endpoint = format!("{}/api/datasources", config.grafana_dst_host);
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
 
-    let dst_data_source_uids: Vec<serde_json::Value> = match client.get(&endpoint)
-        .headers(headers.clone())
+    let endpoint = format!("{}/api/datasources", config.grafana_dst_host);
+
+    let dst_datasource_uids: Vec<serde_json::Value> = match client.get(&endpoint)
         .send().
         await {
             Err(_) => vec![],
@@ -294,25 +341,41 @@ async fn import_data_sources() {
             }
     };
 
-    for ds in data_sources {
-        let uid = match ds["uid"].as_str() {
-            Some(uid) => uid,
-            None => continue,
-        };
+    let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-        let method = if dst_data_source_uids.contains(&serde_json::json!(uid)) {
-            endpoint = format!("{}/api/datasources/uid/{}", config.grafana_dst_host, uid); 
-            reqwest::Method::PUT
+    for path in datasource_paths {
+        let file_content = fs::read_to_string(path).unwrap();
+        let json_data: serde_json::Value = serde_json::from_str(&file_content).unwrap();
+
+        let datasource_uid = json_data.get("uid").unwrap().as_str().unwrap().to_string();
+
+        let (method, endpoint) = if dst_datasource_uids.contains(&serde_json::json!(datasource_uid)) {
+            (reqwest::Method::PUT, format!("{}/api/datasources/uid/{}", config.grafana_dst_host, datasource_uid))
         } else {
-            reqwest::Method::POST
+            (reqwest::Method::POST, format!("{}/api/datasources", config.grafana_dst_host))
         };
 
-        client.request(method, &endpoint)
-            .headers(headers.clone())
-            .json(&ds)
-            .send()
-            .await
-            .unwrap();
+        let client = client.clone();
+
+        handles.push(tokio::spawn(async move {
+            match client.request(method, &endpoint)
+                .json(&json_data)
+                .send()
+                .await {
+                    Err(e) => eprintln!("Error importing datasource '{}' to '{}': {:?}", datasource_uid, endpoint, e),
+                    Ok(res) => {
+                        if res.status() == reqwest::StatusCode::OK {
+                            println!("Successfully importing datasource '{}' to '{}'", datasource_uid, endpoint);
+                        } else {
+                            eprintln!("Failed to import datasource '{}' to '{}' with status code {}", datasource_uid, endpoint, res.status().as_u16());
+                        }
+                    },
+                }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
     }
 }
 
@@ -333,8 +396,8 @@ async fn main() {
         eprintln!("Usage: {} <export | import>", args[0]);
     } else {
         match args[1].as_str() {
-            "export" => export_dashboard().await,
-            "import" => import_dashboard().await,
+            "export" => export_dashboards().await,
+            "import" => import_dashboards().await,
             other => eprintln!("{}: '{}' it's not a valid argument\n\nHere's the available argument:\n- export\n- import", args[0], other),
         }
     }
