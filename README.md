@@ -1,41 +1,45 @@
 # grafana-exim
 
-A simple tool for exporting and importing Grafana dashboards.
+A simple tool for exporting and importing Grafana folders, dashboards, and datasources.
 
 ## Features
 
-- Export dashboards and folders from a Grafana source instance  
-- Import dashboards and folders to a Grafana destination instance  
-- Supports asynchronous processing for faster operations  
+- Export and import folders, dashboards, and datasources between Grafana instances  
 - Automatically cleans up dashboard metadata and handles folder associations  
+- Configurable using YAML for easier management  
+- Structured logging via `log4rs`  
 
-## Environment Setup
+## Configuration
 
-Set up your Grafana credentials by creating a `.env` file or setting environment variables:
+Example configuration file:
 
-```env
-GRAFANA_SRC_HOST=http://192.168.1.1:3000
-GRAFANA_SRC_API_KEY=<your_service_account_token>
+```yaml
+grafana:
+  src:
+    host: http://192.168.1.1:3000
+    api_key: glsa_ABCDEFGHIJK1234567890abcdefghijk_lmnopqrs
 
-GRAFANA_DST_HOST=http://192.168.2.1:3000
-GRAFANA_DST_API_KEY=<your_service_account_token>
-```
+  dst:
+    host: http://192.168.2.1:3000
+    api_key: glsa_LMNOPQRSTUV1234567890lmnopqrstuv_abcdefgh
 
-Replace `<your_service_account_token>` with your actual Service Account tokens.
+log_config: 
+  filepath: log4rs.yaml # full path or relative path
+````
 
-## Authentication
+### Authentication
 
 This tool authenticates requests to Grafana using **Service Account Tokens**.
 
-### How to create a Service Account Token:
+How to create a Service Account Token:
 
-1. Log in to your Grafana instance with admin privileges.  
-2. Navigate to **Administration** in the left-hand menu.  
-3. Select **Users and access**, then go to the **Service Accounts** tab.  
-4. Create a new service account and generate its token.  
-5. Copy the token securely — you will use it as the API key in your `.env` file.  
+1. Log in to your Grafana instance with admin privileges.
+2. Navigate to **Administration** in the left-hand menu.
+3. Select **Users and access**, then go to the **Service Accounts** tab.
+4. Create a new service account and generate its token.
+5. Copy the token securely — you will use it as the API key in your YAML config file.
 
-Use this token in the `Authorization` header as follows in all API requests:
+The tool will send the token in the `Authorization` header:
 
 ```
 Authorization: Bearer <YOUR_SERVICE_ACCOUNT_TOKEN>
@@ -43,23 +47,43 @@ Authorization: Bearer <YOUR_SERVICE_ACCOUNT_TOKEN>
 
 For more information, see the [Grafana Service Account Token documentation](https://grafana.com/docs/grafana/latest/developers/http_api/authentication/#service-account-token).
 
+## Logging Configuration
+
+Logging is managed through [`log4rs`](https://docs.rs/log4rs). For most use cases, writing logs to stdout is sufficient. Below is an example `log4rs.yaml` configuration:
+
+```yaml
+refresh_rate: 30 seconds
+
+appenders:
+  stdout:
+    kind: console
+    encoder:
+      pattern: "{d(%Y-%m-%d %H:%M:%S)} [{l}] {t} - {m}{n}"
+
+root:
+  level: info
+  appenders:
+    - stdout
+```
+
+If needed, file-based logging can also be enabled by extending the `appenders` section. See the log4rs documentation for details.
+
 ## Usage
 
-Run the following commands to export dashboards and folders from the source Grafana instance, and import them into the destination instance:
+Run the following commands to export and import data between Grafana instances:
 
 ```bash
-cargo run -- export
-cargo run -- import
+cargo run
 ```
 
 ## References
 
 This project makes use of the following Grafana HTTP APIs:
 
-- [Folder & Dashboard Search API](https://grafana.com/docs/grafana/latest/developers/http_api/folder_dashboard_search/)  
-- [Folder API](https://grafana.com/docs/grafana/latest/developers/http_api/folder/)  
-- [Dashboard API](https://grafana.com/docs/grafana/latest/developers/http_api/dashboard/)  
-- [Data Source API](https://grafana.com/docs/grafana/latest/developers/http_api/data_source/)  
+* [Folder & Dashboard Search API](https://grafana.com/docs/grafana/latest/developers/http_api/folder_dashboard_search/)
+* [Folder API](https://grafana.com/docs/grafana/latest/developers/http_api/folder/)
+* [Dashboard API](https://grafana.com/docs/grafana/latest/developers/http_api/dashboard/)
+* [Data Source API](https://grafana.com/docs/grafana/latest/developers/http_api/data_source/)
 
 ## License
 
